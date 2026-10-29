@@ -22,7 +22,7 @@ The minimal training layout is shown below. Pretrained weights are stored locall
 ├── train3d_asoca.py
 ├── model/
 │   ├── __init__.py
-│   ├── csnet_3d_sam.py
+│   ├── CUCVF3D_sam.py
 │   └── SAM-Med3D-main/
 │       └── ckpt/
 │           └── sam_med3d_turbo.pth       # Downloaded pretrained weights
