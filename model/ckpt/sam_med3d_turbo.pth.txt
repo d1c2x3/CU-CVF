@@ -1,0 +1,1 @@
+https://huggingface.co/blueyo0/SAM-Med3D/blob/main/sam_med3d_turbo.pth
