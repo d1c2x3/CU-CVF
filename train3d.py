@@ -3,8 +3,8 @@
 """ASOCA training for SAM/CNN + CU-CVF + EUR.
 
 Existing img/mask NPY files and folder*_train/validation.list are retained.
-python train3d_asoca.py --data-path /path/to/npy --device cuda:0
-python train3d_asoca.py --data-path /path/to/npy --resume auto
+python train3d.py --data-path /path/to/npy --device cuda:0
+python train3d.py --data-path /path/to/npy --resume auto
 """
 import argparse
 import csv
