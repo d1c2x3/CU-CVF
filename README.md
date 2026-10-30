@@ -92,15 +92,15 @@ Organize the data as follows:
 ```text
 /data/ASOCA/npy/
 ├── img/
-│   ├── case_001.npy
-│   ├── case_002.npy
-│   ├── case_003.npy
-│   └── case_004.npy
+│   ├── Normal_0.npy
+│   ├── Normal_1.npy
+│   ├── Normal_2.npy
+│   └── Normal_3.npy
 └── mask/
-    ├── case_001.npy
-    ├── case_002.npy
-    ├── case_003.npy
-    └── case_004.npy
+    ├── Normal_0.npy
+    ├── Normal_1.npy
+    ├── Normal_2.npy
+    └── Normal_3.npy
 ```
 
 Each image/mask pair must have matching filenames and satisfy the following requirements:
