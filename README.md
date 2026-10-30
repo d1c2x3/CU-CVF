@@ -19,7 +19,7 @@ The minimal training layout is shown below. Pretrained weights are stored locall
 ```text
 .
 ├── README.md
-├── train3d_asoca.py
+├── train3d.py
 ├── model/
 │   ├── __init__.py
 │   ├── CUCVF3D_sam.py
@@ -41,7 +41,7 @@ The minimal training layout is shown below. Pretrained weights are stored locall
 ```
 
 - `model/CUCVF3D_sam.py`: The model, AGE, CU-CVF, EUR, and `CUCVFCompositeLoss`.
-- `train3d_asoca.py`: Data loading, augmentation, optimization, training, sliding-window validation, logging, and full training checkpoints.
+- `train3d.py`: Data loading, augmentation, optimization, training, sliding-window validation, logging, and full training checkpoints.
 - `dataset_ASOCA/`: Case split lists. The actual NPY volumes may be stored outside the repository.
 
 
@@ -114,13 +114,13 @@ Run the following commands from the repository root. Adjust data paths and GPU i
 ### 5.1 Default Training
 
 ```bash
-python train3d_asoca.py --data-path /data/ASOCA/npy --folder folder5 --device cuda:0
+python train3d.py --data-path /data/ASOCA/npy --folder folder5 --device cuda:0
 ```
 
 Specify a different pretrained checkpoint location:
 
 ```bash
-python train3d_asoca.py --data-path /data/ASOCA/npy --device cuda:0 --sam-checkpoint /checkpoints/sam_med3d_turbo.pth
+python train3d.py --data-path /data/ASOCA/npy --device cuda:0 --sam-checkpoint /checkpoints/sam_med3d_turbo.pth
 ```
 
 ### 5.2 JSON Configuration
