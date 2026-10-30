@@ -132,15 +132,17 @@ You can create a `config.json` file, for example:
   "data_path": "/data/ASOCA/npy",
   "folder": "folder5",
   "device": "cuda:0",
-  "run_name": "asoca_fold5",
+  "run_name": "asoca_fold5_poly",
   "epochs": 800,
   "batch_size": 2,
   "input_shape": [128, 160, 160],
   "lr": 0.001,
-  "sam_lr_ratio": 0.1,
+  "poly_power": 0.9,
+  "weight_decay": 0.0,
+  "class_weights": [0.2, 0.8],
   "lambda_ug": 0.0001,
-  "kl_warmup_epochs": 50,
   "evidence_annealing_epochs": 50,
+  "max_grad_norm": 0.0,
   "amp": false
 }
 ```
@@ -158,28 +160,28 @@ python train3d_asoca.py --config config.json
 | --- | --- |
 | Epochs / batch size / patch | `800` / `2` / `128×160×160` |
 | Optimizer | Adam |
-| Base learning rate for new layers | `1e-3` |
-| SAM learning rate ratio / base learning rate | `0.1` / `1e-4` |
-| Learning rate warm-up | `10` epochs |
-| Decay after warm-up | Polynomial decay, `power=0.9` |
-| Minimum learning rate for new layers | `1e-6`; SAM decays proportionally |
-| Weight decay | `1e-5`; excluded for biases and one-dimensional parameters |
+| Initial learning rate for all trainable parameters | `1e-3`, including the unfrozen SAM-Med3D blocks |
+| Learning-rate schedule | Polynomial decay, `power=0.9` |
+| Weight decay | `0.0`, disabled by default |
 | WCE class weights: background / foreground | `0.2 / 0.8` |
-| Target UG-KL weight | `1e-4` |
-| UG-KL warm-up | `50` epochs |
-| Evidential KL annealing | `50` epochs |
+| Fixed UG-KL weight | `1e-4`, active from the first epoch |
+| Evidential Dirichlet KL annealing | `50` epochs |
 | Dynamic prior `sigma0 / gamma / eps` | `1.0 / 2.0 / 1e-6` |
-| Global gradient norm clipping | `5.0` |
+| Global gradient norm clipping | `0.0`, disabled by default |
 | Random seed | `2026` |
 | Default precision | FP32 |
 
-
-
-KL warm-up and evidential annealing use zero-based epoch indices:
-
+The learning-rate schedule is:
 ```text
-effective_lambda_UG(t) = 1e-4 * min(1, t / 50)
-evidence_annealing(t) = min(1, t / 50)
+lr(t) = 1e-3 * (1 - t / T)^0.9
+T = 800
+```
+
+The UG-KL coefficient and the evidential Dirichlet KL coefficient are distinct:
+```text
+lambda_UG(t) = 1e-4
+lambda_evidence_KL(t) = min(1, t / Ta)
+Ta = 50
 ```
 
 
