@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """ASOCA training for SAM/CNN + CU-CVF + EUR.
-
-Existing img/mask NPY files and folder*_train/validation.list are retained.
-python train3d.py --data-path /path/to/npy --device cuda:0
-python train3d.py --data-path /path/to/npy --resume auto
 """
 import argparse
 import csv
@@ -26,6 +22,7 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+TRAINING_PROTOCOL = "manuscript_r1_shared_polynomial_v1"
 # Defaults remain editable here, or can be overridden using JSON / CLI.
 args = {
     "data_path": os.environ.get("ASOCA_DATA_PATH", "./data/ASOCA_dataset_2020/npy"),
@@ -33,12 +30,11 @@ args = {
     "model_path": str(SCRIPT_DIR / "save_models_asoca_new"), "run_name": None,
     "sam_checkpoint": str(SCRIPT_DIR / "model/SAM-Med3D-main/ckpt/sam_med3d_turbo.pth"),
     "input_shape": (128, 160, 160), "epochs": 800, "batch_size": 2,
-    "lr": 1e-3, "sam_lr_ratio": 0.1, "weight_decay": 1e-5,
-    "warmup_epochs": 10, "min_lr": 1e-6, "poly_power": 0.9,
-    "class_weights": (0.2, 0.8), "lambda_ug": 1e-4, "kl_warmup_epochs": 50,
+    "lr": 1e-3, "weight_decay": 0.0, "poly_power": 0.9,
+    "class_weights": (0.2, 0.8), "lambda_ug": 1e-4,
     "evidence_annealing_epochs": 50, "prior_gamma": 2.0, "prior_sigma0": 1.0,
     "prior_eps": 1e-6, "age_max_tokens": 1024, "sab_max_tokens": 512,
-    "max_grad_norm": 5.0, "image_scale": 255.0, "patches_per_case": 1,
+    "max_grad_norm": 0.0, "image_scale": 255.0, "patches_per_case": 1,
     "rotation_probability": 0.2, "rotation_degrees": 15.0,
     "flip_probability": 0.5, "blur_probability": 0.2, "blur_sigma": (0.1, 1.0),
     "num_workers": 4, "prefetch_factor": 2, "seed": 2026,
@@ -77,9 +73,12 @@ def parse_config(argv=None):
 
 def validate_config(config):
     config = dict(config)
+    unknown = set(config) - set(args)
+    if unknown:
+        raise ValueError("Unknown or retired configuration keys: " + ", ".join(sorted(unknown)))
     positive_ints = ("epochs", "batch_size", "evidence_annealing_epochs", "cpu_threads", "test_step",
                      "checkpoint_every", "snapshot", "log_every", "patches_per_case", "val_batch_size", "prefetch_factor")
-    nonnegative_ints = ("num_workers", "seed", "warmup_epochs", "kl_warmup_epochs", "keep_components")
+    nonnegative_ints = ("num_workers", "seed", "keep_components")
     for key in positive_ints + nonnegative_ints:
         value = config[key]
         if not isinstance(value, int) or isinstance(value, bool) or value < (1 if key in positive_ints else 0):
@@ -87,17 +86,17 @@ def validate_config(config):
     config["input_shape"] = tuple(config["input_shape"])
     if len(config["input_shape"]) != 3 or any(not isinstance(n, int) or n < 16 or n % 16 for n in config["input_shape"]):
         raise ValueError("input_shape must contain three positive multiples of 16")
-    for key in ("lr", "min_lr", "sam_lr_ratio", "poly_power", "image_scale", "prior_sigma0", "prior_eps", "max_grad_norm"):
+    for key in ("lr", "poly_power", "image_scale", "prior_sigma0", "prior_eps"):
         if not math.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(key + " must be finite and positive")
-    for key in ("lambda_ug", "prior_gamma", "weight_decay", "rotation_degrees"):
+    for key in ("lambda_ug", "prior_gamma", "weight_decay", "rotation_degrees", "max_grad_norm"):
         if not math.isfinite(config[key]) or config[key] < 0:
             raise ValueError(key + " must be finite and nonnegative")
     for key in ("rotation_probability", "flip_probability", "blur_probability", "threshold"):
         if not math.isfinite(config[key]) or not 0 <= config[key] <= 1:
             raise ValueError(key + " must lie in [0,1]")
-    if not 0 <= config["val_overlap"] < 1 or config["min_lr"] > config["lr"]:
-        raise ValueError("val_overlap must lie in [0,1); min_lr must not exceed lr")
+    if not 0 <= config["val_overlap"] < 1:
+        raise ValueError("val_overlap must lie in [0,1)")
     if len(config["blur_sigma"]) != 2 or not 0 < config["blur_sigma"][0] <= config["blur_sigma"][1]:
         raise ValueError("blur_sigma must be a positive ordered pair")
     weights = np.asarray(config["class_weights"], dtype=float)
@@ -220,34 +219,32 @@ def setup_runtime(config):
 
 
 def build_optimizer(model, config):
-    groups = {}
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad:
-            continue
-        sam = name.startswith("sam_model.")
-        decay = parameter.ndim > 1 and not name.endswith(".bias")
-        key = (sam, decay)
-        if key not in groups:
-            groups[key] = {"params": [], "lr": config["lr"] * (config["sam_lr_ratio"] if sam else 1.0),
-                           "weight_decay": config["weight_decay"] if decay else 0.0,
-                           "name": ("sam" if sam else "new") + ("_decay" if decay else "_no_decay")}
-        groups[key]["params"].append(parameter)
-    if not groups:
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    if not parameters:
         raise ValueError("Model has no trainable parameters")
-    return torch.optim.Adam(list(groups.values()))
+    # One LR for every trainable parameter, including the unfrozen VFM blocks.
+    return torch.optim.Adam([{"params": parameters, "name": "trainable"}],
+                            lr=config["lr"], weight_decay=config["weight_decay"])
 
 
 def learning_rate_factor(epoch, config):
-    warmup = min(config["warmup_epochs"], max(0, config["epochs"] - 1))
-    if epoch < warmup:
-        return float(epoch + 1) / warmup
-    progress = min(1.0, max(0.0, (epoch - warmup) / max(1, config["epochs"] - warmup)))
-    return max(config["min_lr"] / config["lr"], (1.0 - progress) ** config["poly_power"])
+    """Section 4.3: LR(t) / LR(0) = (1 - t / T)^0.9, with zero-based t.
+
+    LambdaLR initializes at t=0 and is stepped AFTER each completed epoch.
+    There is no warm-up, shifted decay origin, or positive minimum-LR floor.
+    """
+    if epoch < 0:
+        raise ValueError("epoch must be nonnegative")
+    progress = min(1.0, float(epoch) / config["epochs"])
+    return (1.0 - progress) ** config["poly_power"]
 
 
 def effective_kl_weight(epoch, config):
-    ramp = config["kl_warmup_epochs"]
-    return config["lambda_ug"] * (min(1.0, epoch / ramp) if ramp else 1.0)
+    """Eq. 24 uses a fixed UG-KL coefficient from the first training epoch.
+
+    Only the separate evidential Dirichlet KL coefficient anneals in Eq. 31.
+    """
+    return config["lambda_ug"]
 
 
 def metrics_from_counts(tp, fp, fn, tn):
@@ -371,8 +368,17 @@ def train_epoch(model, loader, optimizer, scaler, criterion, config, epoch, devi
             raise FloatingPointError("Nonfinite loss at epoch {}, step {}".format(epoch + 1, step))
         scaler.scale(losses["total"]).backward()
         scaler.unscale_(optimizer)
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            [p for p in model.parameters() if p.requires_grad], config["max_grad_norm"], error_if_nonfinite=not config["amp"])
+        parameters = [p for p in model.parameters() if p.requires_grad and p.grad is not None]
+        if config["max_grad_norm"] > 0:
+            # Optional experiment setting; the manuscript-aligned default is off.
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                parameters, config["max_grad_norm"], error_if_nonfinite=not config["amp"])
+        else:
+            # Log the norm without modifying gradients.
+            norms = [p.grad.detach().float().norm(2) for p in parameters]
+            grad_norm = torch.stack(norms).norm(2) if norms else image.new_zeros(())
+            if not config["amp"] and not torch.isfinite(grad_norm):
+                raise FloatingPointError("Nonfinite training gradients")
         scaler.step(optimizer)
         scaler.update()
         batch_size = image.shape[0]
@@ -431,11 +437,15 @@ def restore_rng(state, device, generator):
 
 def resume_checkpoint(path, model, optimizer, scheduler, scaler, config, signature, device, generator):
     state = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(state, dict) and state.get("format_version") == 1:
+        raise ValueError("Legacy training protocol checkpoint: the earlier grouped-LR/warm-up policy "
+                         "cannot be resumed as the manuscript-aligned protocol. Start a fresh run; "
+                         "use a model-only state_dict with --initial-weights for an explicit new experiment.")
     required = {"model", "optimizer", "scheduler", "scaler", "config", "rng", "epoch", "data_signature",
-                "format_version", "global_step", "best_dice", "best_epoch"}
+                "format_version", "training_protocol", "global_step", "best_dice", "best_epoch"}
     if not isinstance(state, dict) or not required <= state.keys():
         raise ValueError("Resume needs a full training checkpoint; use --initial-weights for a state_dict")
-    if state["format_version"] != 1:
+    if state["format_version"] != 2 or state["training_protocol"] != TRAINING_PROTOCOL:
         raise ValueError("Unsupported training checkpoint format")
     runtime = {"data_path", "split_root", "model_path", "run_name", "sam_checkpoint", "num_workers", "prefetch_factor",
                "device", "cpu_threads", "checkpoint_every", "snapshot", "log_every", "resume", "initial_weights"}
@@ -509,8 +519,9 @@ def train(config=None, model=None):
         (run_dir / "data_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         logger.info("device=%s train_cases=%d val_cases=%d parameters=%d trainable=%d amp=%s", device, len(training), len(validation),
                     sum(p.numel() for p in model.parameters()), sum(p.numel() for p in model.parameters() if p.requires_grad), config["amp"])
-        logger.info("LR=%g SAM_LR=%g weights=%s UG-KL=%g ramp=%d evidence_anneal=%d", config["lr"], config["lr"] * config["sam_lr_ratio"],
-                    config["class_weights"], config["lambda_ug"], config["kl_warmup_epochs"], config["evidence_annealing_epochs"])
+        logger.info("protocol=%s shared_initial_LR=%g poly_power=%g weights=%s fixed_UG-KL=%g evidence_anneal=%d",
+                    TRAINING_PROTOCOL, config["lr"], config["poly_power"], config["class_weights"],
+                    config["lambda_ug"], config["evidence_annealing_epochs"])
         for epoch in range(start_epoch, config["epochs"]):
             sampler.epoch = epoch
             used_lr = {group["name"]: group["lr"] for group in optimizer.param_groups}
@@ -532,7 +543,8 @@ def train(config=None, model=None):
                        **{"lr_" + k: v for k, v in used_lr.items()}, **{"train_" + k: v for k, v in metrics.items()},
                        **{"val_" + k: v for k, v in val.items()}, "best_dice": best_dice})
             if epoch == 0 or (epoch + 1) % config["checkpoint_every"] == 0 or epoch + 1 == config["epochs"] or (epoch + 1) % config["snapshot"] == 0:
-                checkpoint = {"format_version": 1, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                checkpoint = {"format_version": 2, "training_protocol": TRAINING_PROTOCOL,
+                              "model": model.state_dict(), "optimizer": optimizer.state_dict(),
                               "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(), "epoch": epoch + 1,
                               "global_step": global_step, "best_dice": best_dice, "best_epoch": best_epoch,
                               "config": config, "data_signature": signature, "rng": capture_rng(device, generator)}
