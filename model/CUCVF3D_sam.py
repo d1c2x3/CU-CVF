@@ -1,15 +1,7 @@
 """
 SAM-Med3D + residual 3D U-Net, AGE, hierarchical variational fusion, and
-evidential uncertainty refinement (EUR). The uncertainty feedback is a
-training-time KL constraint; it does not require a recurrent forward pass.
-
-    model = CUCVF3D_sam(classes=2, channels=1)
-    logits = model(image)                         # [B,K,D,H,W]
-    output = model(image, return_aux=True)
-    losses = CUCVFCompositeLoss(...)(output, label, epoch=epoch)
-    losses["total"].backward()
+evidential uncertainty refinement (EUR). 
 """
-
 from pathlib import Path
 import math
 
@@ -47,10 +39,6 @@ def _resize(x, size):
 
 def _sam_attention_3d(attention, x):
     """SAM self-attention with correctly aligned D/H/W relative position axes.
-
-    Some bundled SAM-Med3D versions broadcast relative positions on the wrong
-    axes and fail on rectangular grids. Use the original parameters locally,
-    without modifying the SAM package, its state dict, or any global method.
     """
     batch, depth, height, width, channels = x.shape
     shape = (depth, height, width)
@@ -189,12 +177,9 @@ class AttentionGuidedEnhancement3d(nn.Module):
 
 
 class SpatialAttentionBlock3d(nn.Module):
-    """CS2Net spatial affinity residual used by EUR (Eq. 18).
-
-    The existing repository's query/key/judge spatial affinity is retained.
+    """
     Attention runs on a bounded grid by default: a full-volume N x N matrix
-    at 128 x 160 x 160 is impractical. Set max_tokens=None for unpooled SAB.
-    This method returns the residual contribution only, so EUR adds x once.
+    at 128 x 160 x 160 is impractical. 
     """
 
     def __init__(self, channels, max_tokens=512):
@@ -225,7 +210,7 @@ class SpatialAttentionBlock3d(nn.Module):
 
 
 class GaussianEncoder3d(nn.Module):
-    """Eqs. 2-5; sigma is a standard deviation, never a variance/log-variance."""
+    """sigma is a standard deviation"""
 
     def __init__(self, channels, eps=1e-6):
         super().__init__()
@@ -241,11 +226,6 @@ class GaussianEncoder3d(nn.Module):
 
 
 class ClosedLoopVariationalFusion3d(nn.Module):
-    """Eqs. 1-11. Eq. 11 regularizes feature posteriors of both branches.
-
-    Attention logits are stochastic, but the manuscript does not specify a
-    separate attention KL penalty, so no additional loss is introduced.
-    """
 
     def __init__(self, channels=256, sigma0=1.0, gamma=2.0, prior_eps=1e-6):
         super().__init__()
@@ -292,7 +272,6 @@ class ClosedLoopVariationalFusion3d(nn.Module):
 
 
 class EvidentialUncertaintyRefinement3d(nn.Module):
-    """EUR, Eqs. 12-23 and Fig. 4 (four projections to eight channels)."""
 
     def __init__(self, classes, decoder_channels=(16, 32, 64, 128),
                  scale_channels=8, sab_max_tokens=512):
@@ -344,11 +323,6 @@ class EvidentialUncertaintyRefinement3d(nn.Module):
 
 class CUCVF3D_sam(nn.Module):
     """Parallel SAM-Med3D/CNN with CU-CVF and EUR.
-
-    Only the last two ViT blocks are trainable in SAM by default. The neck,
-    patch/position embeddings, prompt encoder and SAM mask decoder stay frozen.
-    Constructor injection of sam_model permits offline testing with a stub.
-    In eval mode both levels of stochastic fusion use their posterior means.
     """
 
     def __init__(self, classes, channels, ckpt_path=None, sam_model=None,
@@ -472,12 +446,8 @@ class CUCVF3D_sam(nn.Module):
 
 
 class CUCVFCompositeLoss(nn.Module):
-    """Eqs. 24-31: Dice + weighted CE + evidence + lambda_ug * UG-KL.
+    """ Dice + weighted CE + evidence + lambda_ug * UG-KL.
 
-    lambda_ug=1e-4 and annealing_epochs=50 are configurable implementation
-    defaults; the supplied manuscript does not report their numerical values.
-    Supply class_weights for dataset-specific weighted CE (Eq. 27).
-    Epoch is zero based, and Eq. 31 is applied as min(1, epoch / Ta).
     """
 
     def __init__(self, class_weights=None, lambda_ug=1e-4, annealing_epochs=50,
